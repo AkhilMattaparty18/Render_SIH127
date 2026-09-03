@@ -1,136 +1,66 @@
-from datetime import datetime
-import os
-import certifi
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit
 from pymongo import MongoClient
+import os
 
 app = Flask(__name__)
 CORS(app)
 
-# MongoDB Atlas Connection
-MONGO_URI = os.getenv(
-    "MONGO_URI",
-    "mongodb+srv://user1:user12326@cluster0.rn7dha5.mongodb.net/?appName=Cluster0&tlsAllowInvalidCertificates=true",
-)
+# Initialize SocketIO
+socketio = SocketIO(app, cors_allowed_origins="*")
 
-client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
-db = client["traffic_system"]
+# Database setup
+MONGO_URI = os.getenv("MONGO_URI")
+client = MongoClient(MONGO_URI)
+db = client['anpr_db']
+vehicles_col = db['vehicles']
 
-logs_col = db["vehicle_logs"]
-cameras_col = db["cameras"]
-blacklist_col = db["blacklisted_vehicles"]
-alerted_col = db["alerted_vehicles"]
+@app.route('/api/detect', methods=['POST'])
+def process_detection():
+    data = request.json
+    vehicle_id = data.get("vehicle_id")
+    cam_id = data.get("cam_id")
+    lat = data.get("latitude")
+    lng = data.get("longitude")
+    timestamp = data.get("time_stamp")
 
+    # Fetch or update vehicle profile in Atlas
+    vehicle = vehicles_col.find_one({"vehicle_id": vehicle_id})
+    is_blacklisted = vehicle.get("is_blacklisted", False) if vehicle else False
+    reason = vehicle.get("blacklist_reason", "N/A") if vehicle else "N/A"
 
-def parse_iso_time(time_str):
-    """Parse ISO 8601 timestamps for chronological sorting."""
-    return datetime.fromisoformat(time_str.replace("Z", "+00:00"))
+    new_spot = {"cam_id": cam_id, "latitude": lat, "longitude": lng, "time_stamp": timestamp}
 
-
-def generate_and_store_trail(target_vehicle):
-    """Processes raw logs for a queried vehicle, checks blacklist status,
-    stores the formatted trail in MongoDB Atlas, and returns the document.
-    """
-    vehicle_id_upper = target_vehicle.strip().upper()
-
-    # 1. Fetch raw logs for the queried vehicle
-    raw_logs = list(
-        logs_col.find({"vehicle_id": vehicle_id_upper}, {"_id": 0})
+    # Save tracking history to MongoDB
+    vehicles_col.update_one(
+        {"vehicle_id": vehicle_id},
+        {
+            "$push": {"trail": new_spot},
+            "$set": {
+                "last_occurrence": new_spot,
+                "is_blacklisted": is_blacklisted,
+                "blacklist_reason": reason
+            },
+            "$inc": {"total_detections": 1}
+        },
+        upsert=True
     )
 
-    if not raw_logs:
-        return None
-
-    # 2. Cache cameras into a lookup map
-    cameras = {
-        str(doc["cam_id"]): doc for doc in cameras_col.find({}, {"_id": 0})
-    }
-
-    # 3. Check if vehicle is blacklisted
-    blacklisted_doc = blacklist_col.find_one(
-        {"vehicle_id": vehicle_id_upper}, {"_id": 0}
-    )
-    is_blacklisted = blacklisted_doc is not None
-    blacklist_reason = (
-        blacklisted_doc.get("reason", "No reason provided")
-        if is_blacklisted
-        else None
-    )
-
-    # 4. Enrich detection entries with spatial metadata
-    trail_points = []
-    for entry in raw_logs:
-        cam_id = str(entry["cam_id"])
-        cam_info = cameras.get(cam_id, {"latitude": None, "longitude": None})
-
-        trail_points.append(
-            {
-                "cam_id": cam_id,
-                "time_stamp": entry["time_stamp"],
-                "latitude": cam_info.get("latitude"),
-                "longitude": cam_info.get("longitude"),
-            }
-        )
-
-    # 5. Sort detection points chronologically
-    ordered_trail = sorted(
-        trail_points, key=lambda x: parse_iso_time(x["time_stamp"])
-    )
-
-    # 6. Build full trail document payload
-    trail_document = {
-        "vehicle_id": vehicle_id_upper,
+    # Payload to send via Socket
+    alert_payload = {
+        "vehicle_id": vehicle_id,
         "is_blacklisted": is_blacklisted,
-        "blacklist_reason": blacklist_reason,
-        "total_detections": len(ordered_trail),
-        "first_occurrence": ordered_trail[0],
-        "last_occurrence": ordered_trail[-1],
-        "trail": ordered_trail,
-        "generated_at": datetime.now().isoformat(),
+        "reason": reason,
+        "location": new_spot,
+        "timestamp": timestamp
     }
 
-    # 7. Store / Update the document directly into MongoDB Atlas
-    alerted_col.update_one(
-        {"vehicle_id": vehicle_id_upper},
-        {"$set": trail_document},
-        upsert=True,
-    )
+    # Emit real-time alert to all connected dashboards
+    if is_blacklisted:
+        socketio.emit('new_blacklist_alert', alert_payload) # Live alert feed
 
-    return trail_document
-
-
-@app.route("/")
-def index():
-    return jsonify({
-        "status": "online",
-        "message": "ANPR Vehicle Tracking API is up and running!"
-    }), 200
-
-
-@app.route("/api/track", methods=["GET"])
-def track_vehicle_api():
-    vehicle_query = request.args.get("vehicle_id", "").strip()
-
-    if not vehicle_query:
-        return jsonify(
-            {"success": False, "message": "Please enter a Vehicle ID."}
-        ), 400
-
-    # Execute search, storage, and retrieval
-    trail_data = generate_and_store_trail(target_vehicle=vehicle_query)
-
-    if not trail_data:
-        return jsonify(
-            {
-                "success": False,
-                "message": f"No logs found in database for Vehicle ID: '{vehicle_query.upper()}'",
-            }
-        ), 404
-
-    return jsonify({"success": True, "data": trail_data})
-
+    return jsonify({"success": True, "data": alert_payload})
 
 if __name__ == "__main__":
-    print("🚀 Script status: Running on http://127.0.0.1:5000")
-    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+    socketio.run(app, host="0.0.0.0", port=5000)
