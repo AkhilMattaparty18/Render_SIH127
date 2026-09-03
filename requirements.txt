@@ -1,7 +1,7 @@
 flask
 flask-cors
 flask-socketio
-eventlet
+simple-websocket
 pymongo
 certifi
 gunicorn
