@@ -1,6 +1,3 @@
-import eventlet
-eventlet.monkey_patch()
-
 import os
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -9,10 +6,12 @@ from pymongo import MongoClient
 import certifi
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
 
-# Initialize MongoDB
+# Enable CORS for REST and WebSockets
+CORS(app, resources={r"/*": {"origins": "*"}})
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+
+# MongoDB Atlas
 MONGO_URI = os.getenv("MONGO_URI")
 client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
 db = client['anpr_db']
