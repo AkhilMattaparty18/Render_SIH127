@@ -1,17 +1,18 @@
+import eventlet
+eventlet.monkey_patch()
+
 import os
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO
 from pymongo import MongoClient
 import certifi
 
 app = Flask(__name__)
-
-# Allow cross-origin requests for both REST API and WebSockets
 CORS(app, resources={r"/*": {"origins": "*"}})
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
 
-# Initialize MongoDB Connection
+# Initialize MongoDB
 MONGO_URI = os.getenv("MONGO_URI")
 client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
 db = client['anpr_db']
@@ -21,7 +22,7 @@ vehicles_col = db['vehicles']
 def health_check():
     return jsonify({
         "status": "online",
-        "message": "ANPR Vehicle Tracking API with SocketIO is up and running!"
+        "message": "ANPR Vehicle Tracking API with SocketIO is live!"
     }), 200
 
 @app.route('/api/track', methods=['GET'])
@@ -36,7 +37,6 @@ def get_vehicle_track():
 
     return jsonify({"success": True, "data": vehicle_data}), 200
 
-# Endpoint to simulate or ingest new camera hits
 @app.route('/api/detect', methods=['POST'])
 def handle_detection():
     payload = request.json or {}
@@ -56,12 +56,10 @@ def handle_detection():
         "time_stamp": time_stamp
     }
 
-    # Fetch vehicle record to inspect blacklist status
     record = vehicles_col.find_one({"vehicle_id": vehicle_id})
     is_blacklisted = record.get("is_blacklisted", False) if record else False
     reason = record.get("blacklist_reason", "None") if record else "None"
 
-    # Push hit into MongoDB trail array
     vehicles_col.update_one(
         {"vehicle_id": vehicle_id},
         {
@@ -83,7 +81,6 @@ def handle_detection():
         "hit": hit_entry
     }
 
-    # Broadcast real-time event to all connected frontend clients
     if is_blacklisted:
         socketio.emit('vehicle_alert', alert_data)
 
