@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import certifi
 from flask import Blueprint, jsonify, request
 from pymongo import MongoClient
@@ -10,7 +11,6 @@ MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://user1:user12326@cluster0.rn7dh
 client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
 db = client["traffic_system"]
 
-# Ensure local directory for storing JSON trail files exists
 TRAILS_DIR = "vehicle_trails"
 os.makedirs(TRAILS_DIR, exist_ok=True)
 
@@ -20,15 +20,25 @@ def track_vehicle():
     if not vehicle_id:
         return jsonify({"success": False, "message": "Query parameter 'vehicle_id' is required"}), 400
         
-    target_id = vehicle_id.strip().upper()
+    raw_id = vehicle_id.strip()
+    
+    # Case-insensitive regex match (handles upper/lower case variations)
+    regex_query = re.compile(f"^{re.escape(raw_id)}$", re.IGNORECASE)
     
     try:
-        # 1. Query vehicle_logs collection dynamically for matching vehicle_id
-        logs_cursor = db["vehicle_logs"].find({"vehicle_id": target_id}).sort("timestamp", 1)
+        # Search vehicle_logs using common field names
+        query = {
+            "$or": [
+                {"vehicle_id": regex_query},
+                {"plate_number": regex_query},
+                {"license_plate": regex_query}
+            ]
+        }
+        
+        logs_cursor = db["vehicle_logs"].find(query).sort("timestamp", 1)
         
         trail = []
         for log in logs_cursor:
-            # Strip MongoDB internal _id field and normalize timestamp
             log_data = {
                 "camera_id": log.get("camera_id"),
                 "location": log.get("location"),
@@ -38,22 +48,29 @@ def track_vehicle():
             trail.append(log_data)
             
         if not trail:
-            return jsonify({"success": False, "message": f"No trail data found for vehicle {target_id}"}), 404
+            return jsonify({
+                "success": False, 
+                "message": f"No trail data found in 'vehicle_logs' for vehicle '{raw_id}'"
+            }), 404
 
-        # 2. Check if vehicle is blacklisted
-        blacklist_info = db["blacklisted_vehicles"].find_one({"vehicle_id": target_id}, {"_id": 0})
+        # Check blacklist status
+        blacklist_info = db["blacklisted_vehicles"].find_one({
+            "$or": [
+                {"vehicle_id": regex_query},
+                {"plate_number": regex_query}
+            ]
+        }, {"_id": 0})
         
-        # 3. Construct response payload
         response_payload = {
-            "vehicle_id": target_id,
+            "vehicle_id": raw_id.upper(),
             "is_blacklisted": bool(blacklist_info),
             "blacklist_reason": blacklist_info.get("reason") if blacklist_info else None,
             "total_detections": len(trail),
             "trail": trail
         }
         
-        # 4. Save path data to local JSON file under vehicle_trails directory
-        file_path = os.path.join(TRAILS_DIR, f"{target_id}.json")
+        # Save to local JSON file under vehicle_trails directory
+        file_path = os.path.join(TRAILS_DIR, f"{raw_id.upper()}.json")
         with open(file_path, "w") as f:
             json.dump(response_payload, f, indent=4)
         
