@@ -8,6 +8,7 @@ from pymongo import MongoClient
 from routes.dashboard import dashboard_bp
 from routes.alerts import alerts_bp
 from routes.tracking import tracking_bp
+from routes.analytics import analytics_bp  # <-- ADD THIS
 
 app = Flask(__name__)
 CORS(app)  # Enables cross-origin requests from Vercel
@@ -16,6 +17,7 @@ CORS(app)  # Enables cross-origin requests from Vercel
 app.register_blueprint(dashboard_bp)
 app.register_blueprint(alerts_bp)
 app.register_blueprint(tracking_bp)
+app.register_blueprint(analytics_bp)  # <-- ADD THIS
 
 # Health Check Route
 @app.route('/', methods=['GET'])
