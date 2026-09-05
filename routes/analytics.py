@@ -1,11 +1,9 @@
 import os
-from flask import Flask, jsonify, request
-from flask_cors import CORS
+from flask import Blueprint, jsonify, request
 from pymongo import MongoClient
 
-app = Flask(__name__)
-# Enable CORS for all domains to prevent cross-origin fetch failures
-CORS(app)
+# Define Blueprint
+analytics_bp = Blueprint('analytics_bp', __name__)
 
 # Database Connection
 MONGO_URI = os.getenv(
@@ -16,39 +14,17 @@ MONGO_URI = os.getenv(
 try:
     client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
     db = client.get_database("sirius_db")
-    # Ping database to verify connection on startup
     client.admin.command('ping')
-    print("Connected successfully to MongoDB Atlas")
+    print("Connected successfully to MongoDB Atlas from Analytics")
 except Exception as e:
     print(f"MongoDB Connection Error: {e}")
 
-@app.route('/api/dashboard/stats', methods=['GET'])
-def get_dashboard_stats():
-    try:
-        total_cams = len(db.vehicle_logs.distinct("cam_id")) if "vehicle_logs" in db.list_collection_names() else 0
-        total_vehicles = db.vehicle_logs.count_documents({}) if "vehicle_logs" in db.list_collection_names() else 0
-        anpr_reads = db.vehicle_logs.count_documents({"vehicle_id": {"$ne": None}}) if "vehicle_logs" in db.list_collection_names() else 0
-        active_alerts = db.blacklisted_vehicles.count_documents({}) if "blacklisted_vehicles" in db.list_collection_names() else 0
-
-        return jsonify({
-            "success": True,
-            "data": {
-                "active_cameras": total_cams,
-                "vehicles_detected": total_vehicles,
-                "anpr_reads": anpr_reads,
-                "active_alerts": active_alerts
-            }
-        }), 200
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
-
-@app.route('/api/analytics/cameras', methods=['GET'])
+@analytics_bp.route('/api/analytics/cameras', methods=['GET'])
 def get_analytics_cameras():
     try:
         if "vehicle_logs" not in db.list_collection_names():
             return jsonify({"success": True, "data": []}), 200
 
-        # Query distinct camera IDs across all logs
         raw_cam_ids = db.vehicle_logs.distinct("cam_id")
         cameras = []
 
@@ -57,7 +33,6 @@ def get_analytics_cameras():
                 continue
             
             str_id = str(cid)
-            # Match either as string or int to find the latest lat/lng
             sample_doc = db.vehicle_logs.find_one(
                 {"cam_id": {"$in": [str_id, int(str_id) if str_id.isdigit() else str_id]}},
                 {"latitude": 1, "longitude": 1, "_id": 0}
@@ -73,23 +48,20 @@ def get_analytics_cameras():
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
-@app.route('/api/analytics/camera-metrics', methods=['GET'])
+@analytics_bp.route('/api/analytics/camera-metrics', methods=['GET'])
 def get_camera_metrics():
     try:
         cam_id_param = request.args.get('cam_id', '')
         if not cam_id_param:
             return jsonify({"success": False, "message": "cam_id parameter is required"}), 400
 
-        # Support both string and integer matching in MongoDB queries
         match_ids = [cam_id_param]
         if cam_id_param.isdigit():
             match_ids.append(int(cam_id_param))
 
-        # Query logs matching this camera ID
         logs = list(db.vehicle_logs.find({"cam_id": {"$in": match_ids}}))
         count = len(logs)
 
-        # Calculate metrics safely
         speeds = [doc.get("speed", 0) for doc in logs if isinstance(doc.get("speed"), (int, float))]
         avg_speed = round(sum(speeds) / len(speeds), 1) if speeds else 42.5
 
@@ -118,7 +90,3 @@ def get_camera_metrics():
 
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
