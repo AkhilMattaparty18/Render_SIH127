@@ -1,6 +1,6 @@
-flask
-flask-cors
-pymongo
-certifi
-gunicorn
-motor
+Flask>=3.0.0
+flask-cors>=4.0.0
+pymongo>=4.6.0
+dnspython>=2.4.0
+certifi>=2023.11.17
+gunicorn>=21.2.0
