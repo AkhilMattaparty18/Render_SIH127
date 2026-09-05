@@ -1,6 +1,4 @@
 import os
-import json
-import re
 import certifi
 from flask import Blueprint, jsonify, request
 from pymongo import MongoClient
@@ -11,68 +9,69 @@ MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://user1:user12326@cluster0.rn7dh
 client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
 db = client["traffic_system"]
 
-TRAILS_DIR = "vehicle_trails"
-os.makedirs(TRAILS_DIR, exist_ok=True)
-
 @tracking_bp.route('/api/track', methods=['GET'])
 def track_vehicle():
     vehicle_id = request.args.get('vehicle_id')
     if not vehicle_id:
         return jsonify({"success": False, "message": "Query parameter 'vehicle_id' is required"}), 400
         
-    raw_id = vehicle_id.strip()
-    
-    # Case-insensitive regex match (handles upper/lower case variations)
-    regex_query = re.compile(f"^{re.escape(raw_id)}$", re.IGNORECASE)
+    target_id = vehicle_id.strip().upper()
     
     try:
-        # Search vehicle_logs using common field names
-        query = {
-            "$or": [
-                {"vehicle_id": regex_query},
-                {"plate_number": regex_query},
-                {"license_plate": regex_query}
-            ]
-        }
+        # Step 1: Query raw logs for the given vehicle_id sorted chronologically
+        logs_cursor = db["vehicle_logs"].find(
+            {"vehicle_id": target_id},
+            {"_id": 0}
+        ).sort("time_stamp", 1)
+        logs = list(logs_cursor)
         
-        logs_cursor = db["vehicle_logs"].find(query).sort("timestamp", 1)
-        
-        trail = []
-        for log in logs_cursor:
-            log_data = {
-                "camera_id": log.get("camera_id"),
-                "location": log.get("location"),
-                "timestamp": log.get("timestamp").isoformat() if hasattr(log.get("timestamp"), "isoformat") else log.get("timestamp"),
-                "confidence": log.get("confidence")
-            }
-            trail.append(log_data)
-            
-        if not trail:
-            return jsonify({
-                "success": False, 
-                "message": f"No trail data found in 'vehicle_logs' for vehicle '{raw_id}'"
-            }), 404
+        if not logs:
+            return jsonify({"success": False, "message": f"No logs found for vehicle {target_id}"}), 404
 
-        # Check blacklist status
-        blacklist_info = db["blacklisted_vehicles"].find_one({
-            "$or": [
-                {"vehicle_id": regex_query},
-                {"plate_number": regex_query}
-            ]
-        }, {"_id": 0})
-        
+        # Step 2: Extract unique camera IDs to fetch coordinates
+        cam_ids = list(set(log["cam_id"] for log in logs if "cam_id" in log))
+        cameras_cursor = db["cameras"].find(
+            {"cam_id": {"$in": cam_ids}},
+            {"_id": 0}
+        )
+        camera_map = {cam["cam_id"]: cam for cam in cameras_cursor}
+
+        # Step 3: Reconstruct the trail path
+        trail = []
+        for log in logs:
+            cam_id = log.get("cam_id")
+            cam_info = camera_map.get(cam_id, {})
+            trail.append({
+                "cam_id": cam_id,
+                "time_stamp": log.get("time_stamp"),
+                "latitude": cam_info.get("latitude"),
+                "longitude": cam_info.get("longitude")
+            })
+
+        # Step 4: Construct document and save/update in vehicle_trails collection
+        trail_doc = {
+            "vehicle_id": target_id,
+            "generated_at": logs[-1].get("time_stamp"),
+            "total_detections": len(trail),
+            "trail": trail
+        }
+
+        db["vehicle_trails"].update_one(
+            {"vehicle_id": target_id},
+            {"$set": trail_doc},
+            upsert=True
+        )
+
+        # Step 5: Check blacklist status for response payload
+        blacklist_info = db["blacklisted_vehicles"].find_one({"vehicle_id": target_id}, {"_id": 0})
+
         response_payload = {
-            "vehicle_id": raw_id.upper(),
+            "vehicle_id": target_id,
             "is_blacklisted": bool(blacklist_info),
             "blacklist_reason": blacklist_info.get("reason") if blacklist_info else None,
             "total_detections": len(trail),
             "trail": trail
         }
-        
-        # Save to local JSON file under vehicle_trails directory
-        file_path = os.path.join(TRAILS_DIR, f"{raw_id.upper()}.json")
-        with open(file_path, "w") as f:
-            json.dump(response_payload, f, indent=4)
         
         return jsonify({"success": True, "data": response_payload}), 200
 
