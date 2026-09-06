@@ -11,8 +11,9 @@ from app import db
 @analytics_bp.route('/api/analytics/cameras', methods=['GET'])
 def get_analytics_cameras():
     try:
-        # Fetch distinct camera list or camera documents from database
+        # Fetch distinct camera list and provide default fallback coordinates if missing
         cameras = list(db.activity.aggregate([
+            {"$match": {"cam_id": {"$ne": None}}},
             {
                 "$group": {
                     "_id": "$cam_id",
@@ -24,18 +25,11 @@ def get_analytics_cameras():
                 "$project": {
                     "_id": 0,
                     "cam_id": "$_id",
-                    "latitude": 1,
-                    "longitude": 1
+                    "latitude": {"$ifNull": ["$latitude", 17.4483]},
+                    "longitude": {"$ifNull": ["$longitude", 78.3915]}
                 }
             }
         ]))
-
-        # Fallback list if database returns empty
-        if not cameras:
-            cameras = [
-                {"cam_id": "CAM_01", "latitude": 17.4483, "longitude": 78.3915},
-                {"cam_id": "CAM_02", "latitude": 17.4325, "longitude": 78.4071}
-            ]
 
         return jsonify({"success": True, "data": cameras}), 200
     except Exception as e:
