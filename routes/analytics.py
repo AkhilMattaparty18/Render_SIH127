@@ -1,35 +1,16 @@
 from flask import Blueprint, request, jsonify
 from datetime import datetime, timedelta
 
-# Create Blueprint
 analytics_bp = Blueprint('analytics', __name__)
-
-# Import db from app
 from app import db
 
 # 1. Camera list endpoint required by dropdown
 @analytics_bp.route('/api/analytics/cameras', methods=['GET'])
 def get_analytics_cameras():
     try:
-        # Fetch distinct camera list and provide default fallback coordinates if missing
-        cameras = list(db.activity.aggregate([
-            {"$match": {"cam_id": {"$ne": None}}},
-            {
-                "$group": {
-                    "_id": "$cam_id",
-                    "latitude": {"$first": "$latitude"},
-                    "longitude": {"$first": "$longitude"}
-                }
-            },
-            {
-                "$project": {
-                    "_id": 0,
-                    "cam_id": "$_id",
-                    "latitude": {"$ifNull": ["$latitude", 17.4483]},
-                    "longitude": {"$ifNull": ["$longitude", 78.3915]}
-                }
-            }
-        ]))
+        # Fetch directly from the 'cameras' collection instead of 'activity'
+        cameras_cursor = db.cameras.find({}, {"_id": 0, "cam_id": 1, "latitude": 1, "longitude": 1})
+        cameras = list(cameras_cursor)
 
         return jsonify({"success": True, "data": cameras}), 200
     except Exception as e:
@@ -45,8 +26,8 @@ def get_camera_metrics():
         return jsonify({"success": False, "message": "cam_id is required"}), 400
 
     try:
-        # Fetch metrics for the camera from MongoDB
-        records = list(db.activity.find({"cam_id": cam_id}))
+        # Fetch metrics from the 'vehicle_logs' collection instead of 'activity'
+        records = list(db.vehicle_logs.find({"cam_id": cam_id}))
 
         if not records:
             return jsonify({
@@ -60,7 +41,6 @@ def get_camera_metrics():
                 }
             }), 200
 
-        # Calculate metrics safely
         total_vehicles = len(records)
         avg_speed = 45  # Default or dynamic speed value
 
