@@ -6,15 +6,15 @@ from pymongo import MongoClient
 app = Flask(__name__)
 CORS(app)
 
-# MongoDB Connection (initialized before registering blueprints)
+# MongoDB Connection targeting the correct 'traffic_system' database
 MONGO_URI = os.getenv(
     "MONGO_URI",
-    "mongodb+srv://user1:user12326@cluster0.rn7dha5.mongodb.net/sirius_db?retryWrites=true&w=majority"
+    "mongodb+srv://user1:user12326@cluster0.rn7dha5.mongodb.net/traffic_system?retryWrites=true&w=majority"
 )
 
 try:
     client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-    db = client.get_database("sirius_db")
+    db = client.get_database("traffic_system")
     client.admin.command('ping')
     print("Connected successfully to MongoDB Atlas")
 except Exception as e:
@@ -40,7 +40,6 @@ def health_check():
         "status": "online",
         "service": "SIRIUS Command Dashboard API"
     }), 200
-
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
